@@ -7,11 +7,11 @@ Multi-provider Codex proxy that routes OpenAI Responses natively and translates 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Liveness + configured providers |
-| `GET` | `/v1/models` | Model catalog (MiniMax-backed) |
+| `GET` | `/v1/models` | Model catalog (MiniMax models only) |
 | `POST` | `/v1/responses` | OpenAI Responses API — routes to MiniMax or OpenAI |
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions — routes to MiniMax or OpenAI |
-| `GET` | `/cop` | GitHub raw content proxy (GET) |
-| `POST` | `/cop` | GitHub raw content proxy (POST) |
+| `GET` | `/cop` | GitHub API-aware content proxy (GET) |
+| `POST` | `/cop` | GitHub API-aware content proxy (POST) |
 
 ## Routing logic
 
@@ -22,11 +22,16 @@ Multi-provider Codex proxy that routes OpenAI Responses natively and translates 
 ## Features
 
 - **Streaming** — SSE streaming for both `/v1/responses` and `/v1/chat/completions`
-- **web_fetch tool loop** — conversations with URLs automatically get `web_fetch` tool injection and iterative resolve-loop (up to `MAX_FETCH_LOOPS`)
 - **Response store** — captures conversation history; `previous_response_id` chains are locally resolved across provider boundaries
-- **Circuit breaker** — detects consecutive tool-call-only responses, injects a stop nudge, strips tools after threshold
 - **Structured logging** — `tracing` with `TraceLayer`, per-request `request_id`, byte/chunk counts on every stream event
-- **MiniMax reasoning_split** — reasoning content is split into the response output
+
+### MiniMax-only features
+
+These features apply when routing to MiniMax:
+
+- **web_fetch tool loop** — conversations containing URLs get `web_fetch` tool injection and an iterative resolve-loop (up to `MAX_FETCH_LOOPS`) that executes tool calls and re-sends until all URLs are resolved or the loop limit is hit
+- **Circuit breaker** — detects consecutive tool-call-only responses, injects a stop nudge to prevent infinite loops, and strips tools entirely after a high-threshold pass
+- **reasoning_split** — MiniMax's reasoning content is split into the response output
 
 ## Environment variables
 
@@ -64,13 +69,14 @@ Client
 axum router + TraceLayer (request_id span)
   │
   ├─► health_handler        → inline
-  ├─► models_handler         → inline
-  ├─► cop_get/post_handler  → web_fetch (GitHub raw)
+  ├─► models_handler         → inline (MiniMax model catalog)
+  ├─► cop_get/post_handler  → web_fetch with GitHub token injection
   │
   ├─► responses_handler
-  │     ├─ openai → forward_openai_responses (pipe + store)
+  │     ├─ openai → forward_openai_responses (passthrough + store)
   │     └─ minimax → handle_minimax_responses
-  │                     ├─ web_fetch loop (if URLs in conversation)
+  │                     ├─ web_fetch loop (if URLs detected)
+  │                     ├─ circuit breaker
   │                     ├─ streaming → handle_streaming_response (pipe + store)
   │                     └─ non-streaming → chat_completion_to_response
   │
